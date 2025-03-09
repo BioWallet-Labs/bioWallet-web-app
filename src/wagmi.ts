@@ -14,7 +14,7 @@ import {
 } from "wagmi/chains";
 
 import { NEXT_PUBLIC_WC_PROJECT_ID } from "./config";
-import { sonicChain, sonicBlazeTestnet, unichainMainnet } from "./chains";
+import { sonicChain, sonicBlazeTestnet, unichainMainnet, baseChain, baseSepoliaChain } from "./chains";
 
 export function useWagmiConfig() {
   const projectId = NEXT_PUBLIC_WC_PROJECT_ID ?? "";
@@ -45,6 +45,8 @@ export function useWagmiConfig() {
     const chains = [
       sonicChain,
       sonicBlazeTestnet,
+      baseChain,
+      baseSepoliaChain,
     ] as const;
 
     const wagmiConfig = createConfig({
@@ -57,6 +59,8 @@ export function useWagmiConfig() {
         [sonicChain.id]: http("https://rpc.sonic.fan"),
         // Use fallback provider to handle timeouts
         [sonicBlazeTestnet.id]: http("https://rpc.blaze.soniclabs.com"),
+        [baseChain.id]: http("https://mainnet.base.org"),
+        [baseSepoliaChain.id]: http("https://sepolia.base.org"),
       },
     });
 

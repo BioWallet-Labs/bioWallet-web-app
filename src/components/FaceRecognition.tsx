@@ -1,7 +1,7 @@
 "use client";
 
 import * as faceapi from "face-api.js";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
   useChainId,
   useReadContract,
@@ -9,6 +9,7 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { useAccount } from "wagmi";
+import type { Address } from "viem";
 import SpeechRecognition, {
   useSpeechRecognition,
 } from "react-speech-recognition";
@@ -16,17 +17,40 @@ import { sonicChain } from "../chains";
 import Webcam from "react-webcam";
 import {
   SONIC_CHAIN_ID,
+  BASE_CHAIN_ID,
+  BASE_SEPOLIA_CHAIN_ID,
   bioWalletConfig,
   TOKEN_TRANSFER_ABI,
+  SONIC_BLAZE_TESTNET_ID,
 } from "../constants";
-import TokenTransferWrapper from "./TokenTransferWrapper";
 import {
   createImageFromDataUrl,
   detectFacesInImage,
   findLargestFace,
 } from "../utility/faceRecognitionUtils";
-import { ProfileData } from "./FaceRegistration";
+import type { ProfileData } from "./FaceRegistration";
 import AgentModal from "./AgentModal";
+import { parseUnits, formatUnits } from "viem";
+import {
+  getBridgeQuote,
+  executeBridgeTransaction,
+  getBridgeTransactionStatus,
+  executeCreateTxTransaction,
+} from "../services/deBridgeService";
+
+declare global {
+  interface Window {
+    confirmBridgeTransaction: (params: {
+      data: string;
+      to: string;
+      value: string;
+      orderId: string;
+      sourceChain: number;
+      quoteData: any;
+    }) => Promise<void>;
+    showTransactionForm: () => void;
+  }
+}
 
 export interface SavedFace {
   label: ProfileData;
@@ -48,6 +72,10 @@ type AgentResponse = {
         ticker?: string;
         platform?: string;
         username?: string;
+        // Bridge tokens arguments
+        srcChainId?: string;
+        destinationChainId?: string;
+        humanReadableAmount?: string;
       };
     };
   };
@@ -66,13 +94,32 @@ interface Step {
   type: "scan" | "agent" | "connection" | "token" | "transaction" | "hash";
 }
 
+// Define chain name to ID mapping
+const CHAIN_NAME_TO_ID: Record<string, number> = {
+  // Case insensitive mappings
+  sonic: SONIC_CHAIN_ID,
+  sonicchain: SONIC_CHAIN_ID,
+  "sonic chain": SONIC_CHAIN_ID,
+  sonicblaze: SONIC_BLAZE_TESTNET_ID,
+  "sonic blaze": SONIC_BLAZE_TESTNET_ID,
+  sonicblazetestnet: SONIC_BLAZE_TESTNET_ID,
+  "sonic blaze testnet": SONIC_BLAZE_TESTNET_ID,
+  base: BASE_CHAIN_ID,
+  basechain: BASE_CHAIN_ID,
+  "base chain": BASE_CHAIN_ID,
+  basemainnet: BASE_CHAIN_ID,
+  "base mainnet": BASE_CHAIN_ID,
+  basesepolia: BASE_SEPOLIA_CHAIN_ID,
+  "base sepolia": BASE_SEPOLIA_CHAIN_ID,
+};
+
 export default function FaceRecognition({ savedFaces }: Props) {
   const { address } = useAccount();
   const webcamRef = useRef<Webcam>(null);
   const [isWebcamLoading, setIsWebcamLoading] = useState(true);
   const [isAgentModalOpen, setIsAgentModalOpen] = useState(false);
   const [agentSteps, setAgentSteps] = useState<Step[]>([]);
-  const [currentAddress, setCurrentAddress] = useState<string | null>(null);
+  const [currentAddress, setCurrentAddress] = useState<string>("");
   const [currentTranscript, setCurrentTranscript] = useState<string>("");
   const [transactionAmount, setTransactionAmount] = useState<string | null>(
     null
@@ -84,8 +131,6 @@ export default function FaceRecognition({ savedFaces }: Props) {
   const [detectedFaceImage, setDetectedFaceImage] = useState<string | null>(
     null
   );
-  const [transactionComponent, setTransactionComponent] =
-    useState<React.ReactNode | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { data: hash, isPending, writeContract } = useWriteContract();
 
@@ -133,6 +178,9 @@ export default function FaceRecognition({ savedFaces }: Props) {
   // Add effect to handle transaction confirmation
   useEffect(() => {
     if (isConfirmed && hash) {
+      // Use current chainId instead of hardcoded SONIC_CHAIN_ID
+      const currentChainId = chainId || SONIC_CHAIN_ID;
+
       setAgentSteps((prevSteps) => [
         ...prevSteps.slice(0, -1),
         {
@@ -141,13 +189,13 @@ export default function FaceRecognition({ savedFaces }: Props) {
           type: "transaction",
         },
         {
-          label: `<a href="${bioWalletConfig[SONIC_CHAIN_ID].blockExplorer}/tx/${hash}" target="_blank" rel="noopener noreferrer" class="hover:underline">View on ${bioWalletConfig[SONIC_CHAIN_ID].blockExplorer}</a>`,
+          label: `<a href="${bioWalletConfig[currentChainId].blockExplorer}/tx/${hash}" target="_blank" rel="noopener noreferrer" class="hover:underline">View on ${bioWalletConfig[currentChainId].blockExplorer}</a>`,
           isLoading: false,
           type: "hash",
         },
       ]);
     }
-  }, [isConfirmed, hash]);
+  }, [isConfirmed, hash, chainId]);
 
   // Reset transcript after a period of silence
   useEffect(() => {
@@ -249,146 +297,80 @@ export default function FaceRecognition({ savedFaces }: Props) {
       // Add a small delay before closing the modal
       setTimeout(() => {
         setIsAgentModalOpen(false);
-        setTransactionComponent(null);
         setPendingTransactionHash(undefined);
         setTransactionCompleted(false);
       }, 3000);
     }
   }, [isTransactionConfirmed, pendingTransactionHash, chainId]);
 
-  // Function to handle function calls
-  const handleFunctionCall = async (
-    functionCall: AgentResponse["content"]["functionCall"],
-    profile: ProfileData
-  ) => {
-    if (!functionCall) return;
+  // Helper function to get chain ID from name or ID
+  const getChainId = (
+    chainNameOrId: string | undefined
+  ): number | undefined => {
+    if (!chainNameOrId) return undefined;
 
-    switch (functionCall.functionName) {
-      case "sendTransaction":
-        if (profile.name as `0x${string}`) {
-          // 4.1: Grab amount from JSON
-          const requestedAmount = parseFloat(functionCall.args.amount || "0");
-          setAgentSteps((prevSteps) => [
-            ...prevSteps,
-            {
-              label: `Grabbing amount: ${requestedAmount.toFixed(2)}`,
-              isLoading: false,
-              type: "token",
-            },
-          ]);
-          await new Promise((resolve) => setTimeout(resolve, 500));
-
-          // 4.2: Update UI to show native token transfer
-          setAgentSteps((prevSteps) => [
-            ...prevSteps,
-            {
-              label: "Preparing token transfer...",
-              isLoading: true,
-              type: "token",
-            },
-          ]);
-          await new Promise((resolve) => setTimeout(resolve, 500));
-
-          const tokenInfo = getTokenInfo(
-            "0x0000000000000000000000000000000000000000" as `0x${string}`
-          );
-
-          setAgentSteps((prevSteps) => [
-            ...prevSteps.slice(0, -1),
-            {
-              label: `Using token: <span class="inline-flex items-center"><img src="${tokenInfo.icon}" alt="${tokenInfo.symbol}" class="w-4 h-4 mr-1" style="display: inline-block;" /><span>${tokenInfo.symbol}</span></span>`,
-              isLoading: false,
-              type: "token",
-            },
-          ]);
-          await new Promise((resolve) => setTimeout(resolve, 500));
-
-          // 4.3: Handle native token transaction
-          setAgentSteps((prevSteps) => [
-            ...prevSteps,
-            {
-              label: `Sending ${requestedAmount.toFixed(2)} ${tokenInfo.symbol}`,
-              isLoading: true,
-              type: "transaction",
-            },
-          ]);
-
-          // Use the TokenTransferWrapper to handle native token transfers
-          setTransactionComponent(
-            <TokenTransferWrapper
-              recipientAddress={
-                functionCall.args.recipientAddress as `0x${string}`
-              }
-              initialUsdAmount={requestedAmount.toString()}
-              onTransactionSent={(hash) => {
-                // Store transaction hash for monitoring
-                if (hash) {
-                  setPendingTransactionHash(hash);
-
-                  // Update status to show waiting for confirmation
-                  setAgentSteps((prevSteps) => [
-                    ...prevSteps.slice(0, -1),
-                    {
-                      label: `Transaction submitted! Waiting for confirmation...`,
-                      isLoading: true,
-                      type: "transaction",
-                    },
-                  ]);
-                }
-              }}
-            />
-          );
-
-          console.log("Sending native token to:", profile.name);
-        }
-        break;
-
-      case "connectOnLinkedin":
-        if (profile?.linkedin) {
-          setAgentSteps((prevSteps) => [
-            ...prevSteps,
-            {
-              label: "Connecting on LinkedIn...",
-              isLoading: true,
-              type: "connection",
-            },
-          ]);
-          window.open(`https://linkedin.com/in/${profile.linkedin}`, "_blank");
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          setAgentSteps((prevSteps) => [
-            ...prevSteps.slice(0, -1),
-            {
-              label: "Connected on LinkedIn",
-              isLoading: false,
-              type: "connection",
-            },
-          ]);
-        }
-        break;
-
-      case "connectOnTelegram":
-        if (profile?.telegram) {
-          setAgentSteps((prevSteps) => [
-            ...prevSteps,
-            {
-              label: "Connecting on Telegram...",
-              isLoading: true,
-              type: "connection",
-            },
-          ]);
-          window.open(`https://t.me/${profile.telegram}`, "_blank");
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          setAgentSteps((prevSteps) => [
-            ...prevSteps.slice(0, -1),
-            {
-              label: "Connected on Telegram",
-              isLoading: false,
-              type: "connection",
-            },
-          ]);
-        }
-        break;
+    // If it's already a numeric ID, parse and return it
+    if (/^\d+$/.test(chainNameOrId)) {
+      return parseInt(chainNameOrId);
     }
+
+    // Normalize the chain name (lowercase, remove spaces)
+    const normalizedName = chainNameOrId.toLowerCase().trim();
+
+    // Try to find an exact match
+    if (CHAIN_NAME_TO_ID[normalizedName] !== undefined) {
+      return CHAIN_NAME_TO_ID[normalizedName];
+    }
+
+    // Try to find a match by seeing if the name contains any of our known chains
+    for (const [name, id] of Object.entries(CHAIN_NAME_TO_ID)) {
+      if (normalizedName.includes(name)) {
+        return id;
+      }
+    }
+
+    // No match found
+    console.warn(`Chain name not recognized: ${chainNameOrId}`);
+    return undefined;
+  };
+
+  // Helper function to format amounts for display
+  const formatAmount = (
+    amount: string,
+    chainId: string | undefined,
+    isAlreadyHumanReadable: boolean = false
+  ) => {
+    // First, clean the amount string to handle various formats
+    let cleanAmount = amount;
+
+    // If amount contains a unit (like "3 SONIC" or "3 ETH"), extract just the number
+    if (
+      typeof cleanAmount === "string" &&
+      (cleanAmount.includes(" ") || /[a-zA-Z]/.test(cleanAmount))
+    ) {
+      const match = cleanAmount.match(/^[\d.]+/);
+      if (match) {
+        cleanAmount = match[0];
+        console.log(`Extracted numeric value ${cleanAmount} from ${amount}`);
+      }
+    }
+
+    // Parse the cleaned amount
+    const numericAmount = parseFloat(cleanAmount);
+
+    // Default to SONIC token with 18 decimals if no chainId or it's SONIC chain
+    if (!chainId || chainId === "146" || chainId === "57054") {
+      // If the amount is already human-readable (e.g., from agent), don't divide by 1e18
+      const value = isAlreadyHumanReadable
+        ? numericAmount
+        : numericAmount / 1e18;
+      return `${value.toFixed(6)} SONIC`;
+    }
+
+    // For other chains (BASE), use USDC with 6 decimals
+    // If the amount is already human-readable (e.g., from agent), don't divide by 1e6
+    const value = isAlreadyHumanReadable ? numericAmount : numericAmount / 1e6;
+    return `${value.toFixed(6)} USDC`;
   };
 
   // Function to get token symbol and icon
@@ -635,6 +617,22 @@ export default function FaceRecognition({ savedFaces }: Props) {
         const data: AgentResponse = await res.json();
         console.log("Agent response received:", data);
 
+        // Add more detailed logging for debugging the amount issue
+        if (data.content.functionCall?.functionName === "sendTransaction") {
+          console.log(
+            "Send transaction detected with args:",
+            data.content.functionCall.args
+          );
+          console.log(
+            "  - Amount specified:",
+            data.content.functionCall.args.amount
+          );
+          console.log(
+            "  - Ticker specified:",
+            data.content.functionCall.args.ticker
+          );
+        }
+
         // Update steps to show agent response
         const truncatedResponse =
           data.content.text.length > 50
@@ -663,43 +661,15 @@ export default function FaceRecognition({ savedFaces }: Props) {
       } catch (error) {
         console.error("Error in agent API call:", error);
 
-        // Create a simulated response for testing purposes
-        if (
-          text.toLowerCase().includes("send") ||
-          text.toLowerCase().includes("transfer")
-        ) {
-          console.log("Using mock agent response for send command");
-          // Mock a send transaction
-          const mockAmount = "1.0";
-          await handleFunctionCall(
-            {
-              functionName: "sendTransaction",
-              args: {
-                recipientAddress: largestFace.matchedProfile.name as string,
-                amount: mockAmount,
-              },
-            },
-            largestFace.matchedProfile
-          );
-
-          setAgentSteps((prevSteps) => [
-            ...prevSteps.slice(0, -1),
-            {
-              label: `I'll help you send ${mockAmount} tokens to ${largestFace.matchedProfile.name}`,
-              isLoading: false,
-              type: "agent",
-            },
-          ]);
-        } else {
-          setAgentSteps((prevSteps) => [
-            ...prevSteps.slice(0, -1),
-            {
-              label: `Error connecting to AI agent: ${error instanceof Error ? error.message : "Unknown error"}. Try using the direct buttons below.`,
-              isLoading: false,
-              type: "agent",
-            },
-          ]);
-        }
+        // Show a simple error message instead of the mock functionality
+        setAgentSteps((prevSteps) => [
+          ...prevSteps.slice(0, -1),
+          {
+            label: `Error connecting to AI agent: ${error instanceof Error ? error.message : "Unknown error"}. Please try again or use the direct buttons below.`,
+            isLoading: false,
+            type: "agent",
+          },
+        ]);
       }
     } catch (error) {
       console.error("Error in handleAgentRequest:", error);
@@ -711,6 +681,624 @@ export default function FaceRecognition({ savedFaces }: Props) {
         },
       ]);
     }
+  };
+
+  // Function to handle bridge requests
+  const handleBridgeRequest = async (
+    srcChainId: string | undefined,
+    destinationChainId: string | undefined,
+    humanReadableAmount: string | undefined,
+    recipientAddress: string | undefined,
+    profile: ProfileData
+  ) => {
+    if (!srcChainId || !destinationChainId || !humanReadableAmount) {
+      setAgentSteps((prev) => [
+        ...prev,
+        {
+          label: "Error: Missing required bridging parameters",
+          isLoading: false,
+          type: "agent",
+        },
+      ]);
+      return;
+    }
+
+    // Parse chain IDs
+    const sourceChain = parseInt(srcChainId);
+    const destChain = parseInt(destinationChainId);
+
+    // Determine appropriate token decimals based on source chain
+    const sourceDecimals =
+      sourceChain === BASE_CHAIN_ID || sourceChain === BASE_SEPOLIA_CHAIN_ID
+        ? 6
+        : 18;
+
+    // Convert amount to smallest unit (wei/satoshi)
+    const amountInSmallestUnit = parseUnits(
+      humanReadableAmount,
+      sourceDecimals
+    ).toString();
+
+    try {
+      // Step 1: Get a quote
+      setAgentSteps((prev) => [
+        ...prev,
+        {
+          label: "Getting bridge quote...",
+          isLoading: true,
+          type: "transaction",
+        },
+      ]);
+
+      // Use the recipient address from the function call or the profile
+      const finalRecipientAddress =
+        recipientAddress || (profile.name as Address);
+
+      const quoteResponse = await getBridgeQuote(
+        sourceChain,
+        destChain,
+        amountInSmallestUnit,
+        finalRecipientAddress as string
+      );
+
+      // Log the quote details to console
+      console.log("BRIDGE QUOTE DETAILS:", quoteResponse);
+
+      // Extract the values from the response
+      const srcAmount = quoteResponse.estimation.srcChainTokenIn.amount;
+      const dstAmount = quoteResponse.estimation.dstChainTokenOut.amount;
+
+      // Get token details
+      const sourceDecimals = quoteResponse.estimation.srcChainTokenIn.decimals;
+      const destDecimals = quoteResponse.estimation.dstChainTokenOut.decimals;
+      const srcTokenSymbol = quoteResponse.estimation.srcChainTokenIn.symbol;
+      const dstTokenSymbol = quoteResponse.estimation.dstChainTokenOut.symbol;
+
+      // Format amounts
+      const formattedSrcAmount = formatUnits(BigInt(srcAmount), sourceDecimals);
+      const formattedDstAmount = formatUnits(BigInt(dstAmount), destDecimals);
+
+      // Get estimated time if available
+      const estimatedDelay =
+        quoteResponse.order?.approximateFulfillmentDelay || 0;
+      const estimatedMinutes = Math.ceil(estimatedDelay / 60);
+
+      setAgentSteps((prev) => [
+        ...prev.slice(0, -1),
+        {
+          label: "Bridge Quote Details:",
+          isLoading: false,
+          type: "transaction",
+        },
+        {
+          label: `• You send: ${formattedSrcAmount} ${srcTokenSymbol}`,
+          isLoading: false,
+          type: "transaction",
+        },
+        {
+          label: `• You receive: ${formattedDstAmount} ${dstTokenSymbol}`,
+          isLoading: false,
+          type: "transaction",
+        },
+        {
+          label: `• Fee: ${formatUnits(BigInt(quoteResponse.fixFee || "0"), sourceDecimals)} ${srcTokenSymbol}`,
+          isLoading: false,
+          type: "transaction",
+        },
+        {
+          label: `• Estimated time: ${estimatedMinutes} minutes`,
+          isLoading: false,
+          type: "transaction",
+        },
+        {
+          label: "Preparing transaction...",
+          isLoading: true,
+          type: "transaction",
+        },
+      ]);
+
+      // Execute the transaction using the tx data from the quote response
+      if (quoteResponse.tx) {
+        // Instead of immediately executing the transaction, show a confirm button
+        setAgentSteps((prev) => [
+          ...prev.slice(0, -1), // Remove the "Preparing transaction..." step
+          {
+            label: `<div class="flex flex-col gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <p class="font-medium text-yellow-700">Confirm Bridge Transaction</p>
+              <p class="text-sm text-yellow-600">
+                You are about to bridge ${formattedSrcAmount} ${srcTokenSymbol} to receive approximately ${formattedDstAmount} ${dstTokenSymbol}.
+                ${
+                  quoteResponse.estimation.srcChainTokenIn.address ===
+                    "0x0000000000000000000000000000000000000000" ||
+                  quoteResponse.estimation.srcChainTokenIn.address === "0x0"
+                    ? `<span class="font-medium">(This will use native ${srcTokenSymbol} tokens)</span>`
+                    : `<span class="font-medium">(This requires approval for ${srcTokenSymbol} tokens plus a small network fee in native currency)</span>`
+                }
+              </p>
+              <button 
+                onclick="window.confirmBridgeTransaction(${JSON.stringify({
+                  data: quoteResponse.tx.data,
+                  to: quoteResponse.tx.to,
+                  value: quoteResponse.tx.value,
+                  orderId: quoteResponse.orderId,
+                  sourceChain,
+                  quoteData: quoteResponse,
+                }).replace(/"/g, "&quot;")})" 
+                class="mt-2 px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-md font-medium"
+              >
+                Confirm Bridge Transaction
+              </button>
+            </div>`,
+            isLoading: false,
+            type: "transaction",
+          },
+        ]);
+
+        // Create a global function to handle the confirmation click
+        window.confirmBridgeTransaction = async (params) => {
+          try {
+            // Update steps to show transaction is processing
+            setAgentSteps((prev) => [
+              ...prev,
+              {
+                label: "Processing bridge transaction...",
+                isLoading: true,
+                type: "transaction",
+              },
+            ]);
+
+            // Execute the transaction with the quote data for token approvals
+            const txHash = await executeCreateTxTransaction(
+              {
+                data: params.data,
+                to: params.to,
+                value: params.value,
+              },
+              params.quoteData // Pass the full quote data for token approval checks
+            );
+
+            // Update steps with transaction info
+            setAgentSteps((prev) => [
+              ...prev.filter((step) => !step.isLoading),
+              {
+                label: `Bridge transaction sent with hash: ${txHash}`,
+                isLoading: false,
+                type: "transaction",
+              },
+              {
+                label: `<a href="${bioWalletConfig[params.sourceChain]?.blockExplorer}/tx/${txHash}" target="_blank" rel="noopener noreferrer" class="text-blue-500 hover:underline">View transaction on block explorer</a>`,
+                isLoading: false,
+                type: "transaction",
+              },
+            ]);
+
+            // If there's an order ID, show it for tracking
+            if (params.orderId) {
+              setAgentSteps((prev) => [
+                ...prev,
+                {
+                  label: `You can track this bridge with order ID: ${params.orderId}`,
+                  isLoading: false,
+                  type: "transaction",
+                },
+              ]);
+            }
+
+            // Set the pending transaction hash
+            setPendingTransactionHash(txHash as `0x${string}`);
+          } catch (error) {
+            console.error("Error executing bridge transaction:", error);
+            setAgentSteps((prev) => [
+              ...prev.filter((step) => !step.isLoading),
+              {
+                label: `Error executing transaction: ${error instanceof Error ? error.message : "Unknown error"}`,
+                isLoading: false,
+                type: "transaction",
+              },
+            ]);
+          }
+        };
+      } else {
+        setAgentSteps((prev) => [
+          ...prev.slice(0, -1),
+          {
+            label: `<strong>Note:</strong> This is only a quote. No bridge transaction has been executed.`,
+            isLoading: false,
+            type: "transaction",
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error("Error getting bridge quote:", error);
+      setAgentSteps((prev) => [
+        ...prev,
+        {
+          label: `Error: ${error instanceof Error ? error.message : "Failed to get bridge quote"}`,
+          isLoading: false,
+          type: "transaction",
+        },
+      ]);
+    }
+  };
+
+  // Function to handle function calls
+  const handleFunctionCall = async (
+    functionCall: AgentResponse["content"]["functionCall"],
+    profile: ProfileData
+  ) => {
+    if (!functionCall) {
+      console.log("No function call");
+      return;
+    }
+
+    let functionResult = null;
+
+    switch (functionCall.functionName) {
+      case "sendTransaction":
+        try {
+          const { recipientAddress, amount, ticker } = functionCall.args;
+
+          if (!recipientAddress) {
+            throw new Error("Recipient address is required");
+          }
+
+          // If amount is not provided, default to 1 SONIC token
+          let amountToUse = amount;
+          if (!amountToUse) {
+            console.log("No amount provided, defaulting to 1 SONIC token");
+            amountToUse = "1.0";
+          } else {
+            console.log(
+              "User specified amount:",
+              amountToUse,
+              "Type:",
+              typeof amountToUse
+            );
+
+            // If amount includes text (like "3 sonic"), extract the numeric part
+            if (
+              typeof amountToUse === "string" &&
+              (amountToUse.includes(" ") || /[a-zA-Z]/.test(amountToUse))
+            ) {
+              const match = amountToUse.match(/^[\d.]+/);
+              if (match) {
+                const numericPart = match[0];
+                console.log(
+                  `Processing amount: extracted ${numericPart} from "${amountToUse}"`
+                );
+                amountToUse = numericPart;
+              } else {
+                console.warn(
+                  `Failed to extract numeric part from "${amountToUse}"`
+                );
+              }
+            }
+
+            // Make sure we have a valid number
+            if (isNaN(parseFloat(amountToUse))) {
+              console.warn(
+                `Amount "${amountToUse}" is not a valid number, defaulting to 1.0`
+              );
+              amountToUse = "1.0";
+            }
+          }
+
+          console.log("Final amount to use:", amountToUse);
+
+          // For sending native Sonic tokens, ensure we're using the right ticker
+          // Force Sonic token for regular send transactions
+          const tickerToUse = "146"; // Always use Sonic chain ID as ticker for sendTransaction
+
+          // For display purposes only - DO NOT use for transaction creation
+          // Since the amountToUse comes directly from the agent/user, it's already human-readable
+          const formattedAmount = formatAmount(amountToUse, tickerToUse, true);
+          console.log(
+            "Formatted amount for display only:",
+            formattedAmount,
+            "from raw amount:",
+            amountToUse
+          );
+
+          // Set the transaction amount with explicit Sonic token (just for display)
+          setTransactionAmount(formattedAmount);
+
+          // Store the transaction data for the Send button
+          // IMPORTANT: Use the raw, unformatted amount directly for the transaction
+          const txData = {
+            recipientAddress: recipientAddress as Address,
+            amount: amountToUse, // Store the raw numeric amount directly
+            formattedAmount: formattedAmount, // Only for display
+          };
+
+          // Create a direct send function
+          window.showTransactionForm = async () => {
+            console.log("Executing direct send with data:", txData);
+
+            try {
+              // Update UI to show transaction is processing
+              setAgentSteps((prev) => [
+                ...prev,
+                {
+                  label: "Processing transaction...",
+                  isLoading: true,
+                  type: "transaction",
+                },
+              ]);
+
+              // Make sure we have a clean numeric amount
+              let cleanAmount = txData.amount;
+              console.log("Original amount for transaction:", cleanAmount);
+
+              // If amount includes text (like "3 sonic"), extract the numeric part
+              if (
+                typeof cleanAmount === "string" &&
+                (cleanAmount.includes(" ") || /[a-zA-Z]/.test(cleanAmount))
+              ) {
+                const match = cleanAmount.match(/^[\d.]+/);
+                if (match) {
+                  cleanAmount = match[0];
+                  console.log(
+                    `Cleaned transaction amount: from "${txData.amount}" to "${cleanAmount}"`
+                  );
+                }
+              }
+
+              // CRITICAL: Ensure we have a valid numeric string
+              if (
+                !cleanAmount ||
+                cleanAmount === "" ||
+                isNaN(parseFloat(cleanAmount))
+              ) {
+                console.error(
+                  `Invalid or empty amount: "${cleanAmount}" - using default of 1.0`
+                );
+                cleanAmount = "1.0"; // Fallback to a known good value
+              }
+
+              // ENSURE cleanAmount is a proper string with a numeric value
+              cleanAmount = cleanAmount.toString().trim();
+
+              // Remove any commas or non-numeric characters except the decimal point
+              cleanAmount = cleanAmount.replace(/[^\d.]/g, "");
+
+              // If we have multiple decimal points, keep only the first one
+              const parts = cleanAmount.split(".");
+              if (parts.length > 2) {
+                cleanAmount = parts[0] + "." + parts.slice(1).join("");
+              }
+
+              console.log(`Final cleaned amount for parsing: "${cleanAmount}"`);
+
+              // Parse to wei units - IMPORTANT: handle string-to-big-integer conversion properly
+              try {
+                console.log(
+                  `Converting amount ${cleanAmount} to wei with 18 decimals`
+                );
+
+                const parsedAmount = parseUnits(
+                  cleanAmount,
+                  18 // SONIC uses 18 decimals
+                );
+                console.log(`Parsed amount in wei: ${parsedAmount.toString()}`);
+
+                // Verify we have a non-zero amount
+                if (parsedAmount.toString() === "0") {
+                  console.error(
+                    "ERROR: Parsed amount is ZERO! Original amount:",
+                    txData.amount,
+                    "Cleaned amount:",
+                    cleanAmount
+                  );
+                  throw new Error(
+                    "Transaction amount is zero - this is likely a bug"
+                  );
+                }
+
+                // Convert to hex for the transaction - MUST add '0x' prefix!
+                const amountHex = "0x" + parsedAmount.toString(16);
+                console.log(`Amount in hex: ${amountHex}`);
+
+                // Double check that our hex value is not "0x0" or "0x"
+                if (amountHex === "0x0" || amountHex === "0x") {
+                  console.error(
+                    "ERROR: Hex amount is ZERO or empty! Original parsed amount:",
+                    parsedAmount.toString()
+                  );
+                  throw new Error(
+                    "Transaction amount converted to zero in hex - this is likely a bug"
+                  );
+                }
+
+                // Send the transaction
+                const ethereum = window.ethereum;
+                if (!ethereum) {
+                  throw new Error(
+                    "No wallet provider found. Please install MetaMask."
+                  );
+                }
+
+                // Request account access
+                const accounts = await ethereum.request({
+                  method: "eth_requestAccounts",
+                });
+                if (!accounts || accounts.length === 0) {
+                  throw new Error(
+                    "No accounts found. Please make sure your wallet is connected."
+                  );
+                }
+
+                // Prepare transaction parameters
+                const transactionParameters = {
+                  to: txData.recipientAddress,
+                  from: accounts[0],
+                  value: amountHex, // Use hex value with 0x prefix
+                };
+
+                console.log(
+                  "Final transaction parameters:",
+                  transactionParameters
+                );
+
+                // Send the transaction
+                const txHash = await ethereum.request({
+                  method: "eth_sendTransaction",
+                  params: [transactionParameters],
+                });
+
+                console.log("Transaction sent with hash:", txHash);
+
+                // Update UI with transaction hash
+                setAgentSteps((prev) => [
+                  ...prev.filter((step) => !step.isLoading),
+                  {
+                    label: `Transaction sent with hash: ${txHash}`,
+                    isLoading: false,
+                    type: "hash",
+                  },
+                  {
+                    label: `<a href="${bioWalletConfig[chainId]?.blockExplorer}/tx/${txHash}" target="_blank" rel="noopener noreferrer" class="text-blue-500 hover:underline">View transaction on block explorer</a>`,
+                    isLoading: false,
+                    type: "transaction",
+                  },
+                ]);
+
+                // Set the pending transaction hash
+                setPendingTransactionHash(txHash as `0x${string}`);
+              } catch (error) {
+                console.error("Error parsing amount:", error);
+                throw new Error(`Failed to parse amount: ${cleanAmount}`);
+              }
+            } catch (error) {
+              console.error("Error sending transaction:", error);
+              setAgentSteps((prev) => [
+                ...prev.filter((step) => !step.isLoading),
+                {
+                  label: `Error sending transaction: ${error instanceof Error ? error.message : "Unknown error"}`,
+                  isLoading: false,
+                  type: "transaction",
+                },
+              ]);
+            }
+          };
+
+          // Show a clear message from the AI agent with a Send button
+          // Display a nicely formatted amount for better UX - use a more accurate formatting
+          const displayAmount = parseFloat(amountToUse).toFixed(2) + " SONIC";
+
+          setAgentSteps((prev) => [
+            ...prev,
+            {
+              label: `<div class="p-3 bg-blue-50 border border-blue-200 rounded-lg mb-3">
+                <p class="font-medium text-blue-700">AI Agent Response:</p>
+                <p class="text-blue-600 mb-2">I'll help you send ${displayAmount} to ${recipientAddress}</p>
+                <button 
+                  class="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-md font-medium"
+                  onclick="window.showTransactionForm()">
+                  Send ${displayAmount}
+                </button>
+              </div>`,
+              isLoading: false,
+              type: "agent",
+            },
+          ]);
+        } catch (error) {
+          console.error("Error creating transaction:", error);
+        }
+        break;
+
+      case "getBridgeQuote":
+        // Handle the bridge tokens function from the AI agent
+        try {
+          const {
+            srcChainId,
+            destinationChainId,
+            amount,
+            humanReadableAmount,
+          } = functionCall.args;
+
+          // Get chain IDs from names or IDs
+          const sourceChainId = getChainId(srcChainId);
+          const destChainId = getChainId(destinationChainId);
+
+          if (!sourceChainId || !destChainId || !amount) {
+            throw new Error(
+              "Missing or invalid parameters for bridge operation"
+            );
+          }
+
+          console.log("Bridge request detected from AI agent:");
+          console.log(`  Source Chain: ${srcChainId} (ID: ${sourceChainId}`);
+          console.log(
+            `  Destination Chain: ${destinationChainId} (ID: ${destChainId})`
+          );
+          console.log(`  Amount: ${amount} (${humanReadableAmount || amount})`);
+
+          // Update UI to show bridge operation is in progress
+          setAgentSteps((prevSteps) => [
+            ...prevSteps,
+            {
+              label: `Preparing to bridge ${humanReadableAmount || amount} from ${sourceChainId} to ${destChainId}`,
+              isLoading: false,
+              type: "transaction",
+            },
+            {
+              label: "Getting bridge quote...",
+              isLoading: true,
+              type: "transaction",
+            },
+          ]);
+
+          // Use the more robust handleBridgeRequest function instead of directly calling getBridgeQuote
+          await handleBridgeRequest(
+            sourceChainId.toString(),
+            destChainId.toString(),
+            amount,
+            undefined,
+            profile
+          );
+        } catch (error) {
+          console.error("Error processing bridge request:", error);
+          setAgentSteps((prevSteps) => [
+            ...prevSteps.filter((step) => !step.isLoading),
+            {
+              label: `Error getting bridge quote: ${error instanceof Error ? error.message : "Unknown error"}`,
+              isLoading: false,
+              type: "transaction",
+            },
+          ]);
+        }
+        break;
+
+      case "connectSocial":
+        try {
+          const { platform, username } = functionCall.args;
+
+          if (!platform || !username) {
+            throw new Error("Platform and username are required");
+          }
+
+          // Placeholder for social connection logic
+          functionResult = `Connected to ${platform} as ${username}`;
+
+          // Update agent steps to show the connection was made
+          setAgentSteps((prev) => [
+            ...prev,
+            {
+              label: `Connected to ${platform} as ${username}`,
+              isLoading: false,
+              type: "connection",
+            },
+          ]);
+        } catch (error) {
+          console.error("Error connecting social:", error);
+        }
+        break;
+
+      default:
+        console.log(`Unknown function: ${functionCall.functionName}`);
+    }
+
+    return functionResult;
   };
 
   useEffect(() => {
@@ -858,63 +1446,67 @@ export default function FaceRecognition({ savedFaces }: Props) {
         isOpen={isAgentModalOpen}
         onClose={() => {
           setIsAgentModalOpen(false);
-          // Clear any lingering transcript
-          resetTranscript();
-          // Resume speech recognition when agent modal is closed
-          if (browserSupportsSpeechRecognition) {
-            SpeechRecognition.startListening({ continuous: true });
-            setMicStatus("Microphone active");
-          }
+          // Restart listening
+          SpeechRecognition.startListening({ continuous: true });
         }}
         steps={agentSteps}
         transcript={currentTranscript}
       >
-        {/* Show labeled face image if available */}
-        {detectedFaceImage && (
-          <div className="mt-4 p-4 bg-[#151a26] rounded-lg">
-            <h3 className="text-sm font-semibold mb-2">Detected Face</h3>
-            <img
-              src={detectedFaceImage}
-              alt="Detected face"
-              className="w-full rounded-lg shadow-sm"
-            />
-            {matchedProfile?.name && (
-              <div className="space-y-2">
-                <div className="flex items-center bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm">
-                  <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center mr-3">
-                    <svg
-                      className="w-6 h-6 text-blue-600 dark:text-blue-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-                      />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Account Address
-                    </p>
-                    <p className="font-medium text-gray-900 dark:text-white">
-                      {matchedProfile.name.length > 12
-                        ? `${matchedProfile.name.substring(0, 6)}...${matchedProfile.name.substring(matchedProfile.name.length - 4)}`
-                        : matchedProfile.name}
-                    </p>
-                  </div>
-                </div>
+        <div className="flex flex-col space-y-4 mb-4">
+          {/* Detected face */}
+          {detectedFaceImage && (
+            <div className="flex flex-col items-center">
+              <div className="bg-white p-2 rounded-md border mb-2">
+                <img
+                  src={detectedFaceImage}
+                  alt="Detected Face"
+                  className="w-32 h-32 object-cover rounded-md"
+                />
               </div>
-            )}
-          </div>
-        )}
-        {/* Show transaction component if available */}
-        {transactionComponent && (
-          <div className="mt-4">{transactionComponent}</div>
-        )}
+              {matchedProfile && (
+                <div className="text-center bg-gray-50 p-2 rounded-lg border w-full">
+                  <p className="font-medium">{matchedProfile.name}</p>
+                  {(matchedProfile.linkedin ||
+                    matchedProfile.telegram ||
+                    matchedProfile.twitter) && (
+                    <div className="flex justify-center space-x-3 mt-1">
+                      {matchedProfile.linkedin && (
+                        <a
+                          href={`https://linkedin.com/in/${matchedProfile.linkedin}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          LinkedIn
+                        </a>
+                      )}
+                      {matchedProfile.telegram && (
+                        <a
+                          href={`https://t.me/${matchedProfile.telegram}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-500 hover:underline"
+                        >
+                          Telegram
+                        </a>
+                      )}
+                      {matchedProfile.twitter && (
+                        <a
+                          href={`https://twitter.com/${matchedProfile.twitter}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sky-500 hover:underline"
+                        >
+                          Twitter
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </AgentModal>
 
       {/* Direct agent trigger button */}
@@ -1009,18 +1601,6 @@ export default function FaceRecognition({ savedFaces }: Props) {
             onClick={() => {
               // Force a direct transaction flow bypassing bio recognition
               setIsAgentModalOpen(true);
-              setAgentSteps([
-                {
-                  label: "Manual Mode: Bypassing bio recognition",
-                  isLoading: false,
-                  type: "scan",
-                },
-                {
-                  label: "Select a transaction option below:",
-                  isLoading: false,
-                  type: "agent",
-                },
-              ]);
 
               // Show mock info for the first saved face or a placeholder
               const mockProfile =
@@ -1056,17 +1636,22 @@ export default function FaceRecognition({ savedFaces }: Props) {
                 }
               }
 
-              // Show direct transaction option
-              handleFunctionCall(
+              // Show a simple demo started message
+              setAgentSteps([
                 {
-                  functionName: "sendTransaction",
-                  args: {
-                    recipientAddress: mockProfile.name as string,
-                    amount: "1.0",
-                  },
+                  label: "Manual Mode: Bypassing bio recognition",
+                  isLoading: false,
+                  type: "scan",
                 },
-                mockProfile
-              );
+                {
+                  label: `<div class="p-3 bg-indigo-50 border border-indigo-200 rounded-lg mb-3">
+                    <p class="font-medium text-indigo-700">Demo Mode</p>
+                    <p class="text-indigo-600">Demo mode activated. Use the voice button below to start a voice command, or type "send 3 SONIC" in the prompt.</p>
+                  </div>`,
+                  isLoading: false,
+                  type: "agent",
+                },
+              ]);
             }}
             className="px-5 py-2.5 bg-gradient-to-r from-lime-50 to-green-50 text-lime-700 border border-lime-200 rounded-lg hover:shadow-md transition-all duration-300 flex items-center font-medium group hover:bg-gradient-to-r hover:from-lime-100 hover:to-green-100"
           >

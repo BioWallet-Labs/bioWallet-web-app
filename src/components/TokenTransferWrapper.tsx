@@ -1,7 +1,12 @@
 "use client";
 
 import type { Address } from "viem";
-import { SONIC_CHAIN_ID, SONIC_BLAZE_TESTNET_ID } from "../constants";
+import {
+  SONIC_CHAIN_ID,
+  SONIC_BLAZE_TESTNET_ID,
+  BASE_CHAIN_ID,
+  BASE_SEPOLIA_CHAIN_ID,
+} from "../constants";
 import {
   Transaction,
   TransactionButton,
@@ -21,7 +26,12 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { bioWalletConfig } from "../constants";
-import { sonicChain, sonicBlazeTestnet } from "../chains";
+import {
+  sonicChain,
+  sonicBlazeTestnet,
+  baseChain,
+  baseSepoliaChain,
+} from "../chains";
 
 // Define Ethereum provider interface
 interface EthereumProvider {
@@ -39,15 +49,39 @@ export default function TokenTransferWrapper({
   onTransactionSent?: (hash?: `0x${string}`) => void;
 }) {
   const chainId = useChainId();
-  const [usdAmount, setUsdAmount] = useState<string>(
-    initialUsdAmount || "1.00"
+
+  // Make sure initialUsdAmount is properly cleaned and set
+  let cleanInitialAmount = "1.00";
+  if (initialUsdAmount) {
+    if (
+      typeof initialUsdAmount === "string" &&
+      (initialUsdAmount.includes(" ") || /[a-zA-Z]/.test(initialUsdAmount))
+    ) {
+      // Extract numeric part
+      const match = initialUsdAmount.match(/^[\d.]+/);
+      cleanInitialAmount = match ? match[0] : "1.00";
+    } else {
+      cleanInitialAmount = initialUsdAmount;
+    }
+  }
+
+  // Log initialization for debugging
+  console.log(
+    "TokenTransferWrapper initializing with amount:",
+    initialUsdAmount,
+    "cleaned to:",
+    cleanInitialAmount
   );
+
+  // Initialize the state with the cleaned amount
+  const [usdAmount, setUsdAmount] = useState<string>(cleanInitialAmount);
+
   const [shouldAutoInitiate, setShouldAutoInitiate] =
     useState(!!initialUsdAmount);
   const [hasInitiatedTransaction, setHasInitiatedTransaction] = useState(false);
   const [tokenInfo, setTokenInfo] = useState({
-    symbol: "",
-    name: "",
+    symbol: "SONIC", // Default to SONIC to avoid USDC showing initially
+    name: "Sonic Token",
     decimals: 18,
   });
   const [transactionStatus, setTransactionStatus] = useState<string>("");
@@ -86,6 +120,10 @@ export default function TokenTransferWrapper({
           currentChainInfo = bioWalletConfig[SONIC_CHAIN_ID];
         } else if (chainId === SONIC_BLAZE_TESTNET_ID) {
           currentChainInfo = bioWalletConfig[SONIC_BLAZE_TESTNET_ID];
+        } else if (chainId === BASE_CHAIN_ID) {
+          currentChainInfo = bioWalletConfig[BASE_CHAIN_ID];
+        } else if (chainId === BASE_SEPOLIA_CHAIN_ID) {
+          currentChainInfo = bioWalletConfig[BASE_SEPOLIA_CHAIN_ID];
         } else {
           // Default to Sonic Chain if chain ID is not recognized
           currentChainInfo = bioWalletConfig[SONIC_CHAIN_ID];
@@ -113,20 +151,44 @@ export default function TokenTransferWrapper({
     fetchTokenDetails();
   }, [chainId]);
 
-  // Calculate token amount
+  // Calculate token amount for display
   const tokenAmount = !isNaN(parseFloat(usdAmount)) ? usdAmount : "0";
   const rawAmount = parseFloat(tokenAmount);
-  const parsedTokenAmount = parseUnits(tokenAmount, tokenInfo.decimals);
 
-  // Handle transaction
+  // Handle transaction - this function is ONLY for native token transfers
   const handleSendTransaction = async () => {
     try {
       setHasInitiatedTransaction(true);
 
-      // Send the transaction
+      // Get a clean amount string without any token symbols
+      let cleanAmount = tokenAmount;
+
+      // Check for token symbols in the amount
+      if (typeof cleanAmount === "string") {
+        if (cleanAmount.includes(" ") || /[a-zA-Z]/.test(cleanAmount)) {
+          // Extract just the numeric part
+          const numericMatch = cleanAmount.match(/^[\d.]+/);
+          if (numericMatch) {
+            cleanAmount = numericMatch[0];
+            console.log(
+              `Cleaned token amount from "${tokenAmount}" to "${cleanAmount}"`
+            );
+          }
+        }
+      }
+
+      // For native token transfers (like Sonic), we use the value field
+      // This is specifically for sending the chain's native currency
+      const parsedAmount = parseUnits(cleanAmount, tokenInfo.decimals);
+
+      console.log(
+        `Sending ${cleanAmount} ${tokenInfo.symbol} as native transfer`
+      );
+
+      // Send the transaction as a native token transfer
       await sendTransaction({
         to: recipientAddress,
-        value: parsedTokenAmount,
+        value: parsedAmount, // Native value transfer
       });
 
       // Call callback right after MetaMask confirms the transaction
@@ -289,8 +351,8 @@ export default function TokenTransferWrapper({
             Network Timeout Detected
           </p>
           <p className="text-xs text-red-500 mt-1">
-            The connection to the Sonic Blaze Testnet is experiencing issues.
-            This may resolve itself, or you can try:
+            The connection to the network is experiencing issues. This may
+            resolve itself, or you can try:
           </p>
           <ul className="text-xs text-red-500 mt-1 list-disc pl-5">
             <li>Switching networks in your wallet</li>
@@ -312,7 +374,13 @@ export default function TokenTransferWrapper({
                 Native token on{" "}
                 {chainId === SONIC_CHAIN_ID
                   ? "Sonic Chain"
-                  : "Sonic Blaze Testnet"}
+                  : chainId === SONIC_BLAZE_TESTNET_ID
+                    ? "Sonic Blaze Testnet"
+                    : chainId === BASE_CHAIN_ID
+                      ? "Base"
+                      : chainId === BASE_SEPOLIA_CHAIN_ID
+                        ? "Base Sepolia"
+                        : "Unknown Network"}
               </p>
             </div>
           </div>

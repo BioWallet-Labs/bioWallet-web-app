@@ -1,24 +1,28 @@
-'use client';
+"use client";
 
-import type { Address, ContractFunctionParameters } from 'viem';
+import type { Address, ContractFunctionParameters } from "viem";
 import {
   Transaction,
   TransactionButton,
   TransactionStatus,
   TransactionStatusAction,
   TransactionStatusLabel,
-} from '@coinbase/onchainkit/transaction';
+} from "@coinbase/onchainkit/transaction";
 import type {
   TransactionError,
   TransactionResponse,
-} from '@coinbase/onchainkit/transaction';
-import { useEffect, useState } from 'react';
+} from "@coinbase/onchainkit/transaction";
+import { useEffect, useState } from "react";
+import { useChainId } from "wagmi";
 
-import { BASE_SEPOLIA_CHAIN_ID } from '../constants';
-import { parseUnits } from 'viem';
+import { BASE_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "../constants";
+import { parseUnits } from "viem";
 
-// USDC contract address on Base Sepolia
-const USDC_CONTRACT_ADDRESS = "0x078d782b760474a361dda0af3839290b0ef57ad6";
+// USDC contract addresses on different chains
+const USDC_CONTRACT_ADDRESSES: Record<number, Address> = {
+  [BASE_SEPOLIA_CHAIN_ID]: "0x078d782b760474a361dda0af3839290b0ef57ad6",
+  [BASE_CHAIN_ID]: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base Mainnet
+};
 
 // ERC20 ABI for the transfer function
 const USDC_ABI = [
@@ -26,53 +30,73 @@ const USDC_ABI = [
     constant: false,
     inputs: [
       {
-        name: '_to',
-        type: 'address',
+        name: "_to",
+        type: "address",
       },
       {
-        name: '_value',
-        type: 'uint256',
+        name: "_value",
+        type: "uint256",
       },
     ],
-    name: 'transfer',
+    name: "transfer",
     outputs: [
       {
-        name: '',
-        type: 'bool',
+        name: "",
+        type: "bool",
       },
     ],
     payable: false,
-    stateMutability: 'nonpayable',
-    type: 'function',
+    stateMutability: "nonpayable",
+    type: "function",
   },
 ] as const;
 
-export default function SendUsdcWrapper({ recipientAddress, initialUsdAmount }: { recipientAddress: Address, initialUsdAmount?: string }) {
-  const [usdAmount, setUsdAmount] = useState<string>(initialUsdAmount || '1.00');
-  const [shouldAutoInitiate, setShouldAutoInitiate] = useState(!!initialUsdAmount);
+export default function SendUsdcWrapper({
+  recipientAddress,
+  initialUsdAmount,
+}: {
+  recipientAddress: Address;
+  initialUsdAmount?: string;
+}) {
+  const chainId = useChainId();
+  const [usdAmount, setUsdAmount] = useState<string>(
+    initialUsdAmount || "1.00"
+  );
+  const [shouldAutoInitiate, setShouldAutoInitiate] =
+    useState(!!initialUsdAmount);
   const [hasInitiatedTransaction, setHasInitiatedTransaction] = useState(false);
+
+  // Get the appropriate USDC contract address based on current chain
+  const usdcContractAddress =
+    USDC_CONTRACT_ADDRESSES[chainId] ||
+    USDC_CONTRACT_ADDRESSES[BASE_SEPOLIA_CHAIN_ID];
 
   // USDC has 6 decimals
   const USDC_DECIMALS = 6;
 
   // Calculate USDC amount (1:1 with USD)
-  const usdcAmount = !isNaN(parseFloat(usdAmount)) ? usdAmount : '0';
+  const usdcAmount = !isNaN(parseFloat(usdAmount)) ? usdAmount : "0";
 
-  const contracts = usdcAmount && parseFloat(usdcAmount) > 0 && shouldAutoInitiate ? [{
-    address: USDC_CONTRACT_ADDRESS,
-    abi: USDC_ABI,
-    functionName: 'transfer',
-    args: [recipientAddress, parseUnits(usdcAmount, USDC_DECIMALS)],
-  }] as unknown as ContractFunctionParameters[] : [];
+  const contracts =
+    usdcAmount && parseFloat(usdcAmount) > 0 && shouldAutoInitiate
+      ? ([
+          {
+            address: usdcContractAddress,
+            abi: USDC_ABI,
+            functionName: "transfer",
+            args: [recipientAddress, parseUnits(usdcAmount, USDC_DECIMALS)],
+          },
+        ] as unknown as ContractFunctionParameters[])
+      : [];
 
   const handleError = (err: TransactionError) => {
-    console.error('Transaction error:', err);
+    console.error("Transaction error:", err);
     setShouldAutoInitiate(false);
     setHasInitiatedTransaction(false);
   };
 
   const handleSuccess = (response: TransactionResponse) => {
-    console.log('Transaction successful', response);
+    console.log("Transaction successful", response);
     setShouldAutoInitiate(false);
     setHasInitiatedTransaction(true);
   };
@@ -81,7 +105,9 @@ export default function SendUsdcWrapper({ recipientAddress, initialUsdAmount }: 
     <div className="flex flex-col w-full max-w-full gap-2">
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
-          <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500">$</span>
+          <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500">
+            $
+          </span>
           <input
             type="number"
             value={usdAmount}
@@ -95,28 +121,30 @@ export default function SendUsdcWrapper({ recipientAddress, initialUsdAmount }: 
             placeholder="Enter USD amount"
           />
         </div>
-        <div className="text-sm text-gray-500">
-          = {usdcAmount} USDC
-        </div>
+        <div className="text-sm text-gray-500">= {usdcAmount} USDC</div>
       </div>
 
       <Transaction
         contracts={contracts}
         className="mb-4 w-full max-w-full"
-        chainId={BASE_SEPOLIA_CHAIN_ID}
+        chainId={chainId}
         onError={handleError}
         onSuccess={handleSuccess}
       >
-        <TransactionButton 
+        <TransactionButton
           className="mt-0 mr-auto ml-auto max-w-full text-[white] disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={!usdcAmount || parseFloat(usdcAmount) <= 0 || hasInitiatedTransaction}
+          disabled={
+            !usdcAmount ||
+            parseFloat(usdcAmount) <= 0 ||
+            hasInitiatedTransaction
+          }
         />
         <div className="text-center text-sm text-gray-600">
-          {usdcAmount && parseFloat(usdcAmount) > 0 ? 
-            hasInitiatedTransaction ? 
-              'Transaction initiated' : 
-              `Sending $${usdAmount} (${usdcAmount} USDC)` 
-            : 'Enter an amount to send'}
+          {usdcAmount && parseFloat(usdcAmount) > 0
+            ? hasInitiatedTransaction
+              ? "Transaction initiated"
+              : `Sending $${usdAmount} (${usdcAmount} USDC)`
+            : "Enter an amount to send"}
         </div>
         <TransactionStatus>
           <TransactionStatusLabel />
@@ -125,4 +153,4 @@ export default function SendUsdcWrapper({ recipientAddress, initialUsdAmount }: 
       </Transaction>
     </div>
   );
-} 
+}
