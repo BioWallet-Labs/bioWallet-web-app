@@ -1,7 +1,7 @@
-
-
-export const SONIC_CHAIN_ID = 64165;
+export const SONIC_CHAIN_ID = 146;
 export const SONIC_BLAZE_TESTNET_ID = 57054;
+export const BASE_CHAIN_ID = 8453;
+export const BASE_SEPOLIA_CHAIN_ID = 84532;
 export const mintABI = [
   {
     inputs: [
@@ -40,6 +40,18 @@ export const bioWalletConfig: BioWalletConfig = {
     blockExplorer: "https://testnet.sonicscan.org",
     nativeTokenSymbol: "S",
     nativeTokenName: "Sonic",
+    nativeTokenDecimals: 18,
+  },
+  [BASE_CHAIN_ID]: {
+    blockExplorer: "https://basescan.org",
+    nativeTokenSymbol: "ETH",
+    nativeTokenName: "Base Ether",
+    nativeTokenDecimals: 18,
+  },
+  [BASE_SEPOLIA_CHAIN_ID]: {
+    blockExplorer: "https://sepolia.basescan.org",
+    nativeTokenSymbol: "ETH",
+    nativeTokenName: "Base Sepolia Ether",
     nativeTokenDecimals: 18,
   },
 };

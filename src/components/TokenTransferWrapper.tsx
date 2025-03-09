@@ -1,7 +1,12 @@
 "use client";
 
 import type { Address } from "viem";
-import { SONIC_CHAIN_ID, SONIC_BLAZE_TESTNET_ID } from "../constants";
+import {
+  SONIC_CHAIN_ID,
+  SONIC_BLAZE_TESTNET_ID,
+  BASE_CHAIN_ID,
+  BASE_SEPOLIA_CHAIN_ID,
+} from "../constants";
 import {
   Transaction,
   TransactionButton,
@@ -21,7 +26,12 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { bioWalletConfig } from "../constants";
-import { sonicChain, sonicBlazeTestnet } from "../chains";
+import {
+  sonicChain,
+  sonicBlazeTestnet,
+  baseChain,
+  baseSepoliaChain,
+} from "../chains";
 
 // Define Ethereum provider interface
 interface EthereumProvider {
@@ -86,6 +96,10 @@ export default function TokenTransferWrapper({
           currentChainInfo = bioWalletConfig[SONIC_CHAIN_ID];
         } else if (chainId === SONIC_BLAZE_TESTNET_ID) {
           currentChainInfo = bioWalletConfig[SONIC_BLAZE_TESTNET_ID];
+        } else if (chainId === BASE_CHAIN_ID) {
+          currentChainInfo = bioWalletConfig[BASE_CHAIN_ID];
+        } else if (chainId === BASE_SEPOLIA_CHAIN_ID) {
+          currentChainInfo = bioWalletConfig[BASE_SEPOLIA_CHAIN_ID];
         } else {
           // Default to Sonic Chain if chain ID is not recognized
           currentChainInfo = bioWalletConfig[SONIC_CHAIN_ID];
@@ -289,8 +303,8 @@ export default function TokenTransferWrapper({
             Network Timeout Detected
           </p>
           <p className="text-xs text-red-500 mt-1">
-            The connection to the Sonic Blaze Testnet is experiencing issues.
-            This may resolve itself, or you can try:
+            The connection to the network is experiencing issues. This may
+            resolve itself, or you can try:
           </p>
           <ul className="text-xs text-red-500 mt-1 list-disc pl-5">
             <li>Switching networks in your wallet</li>
@@ -312,7 +326,13 @@ export default function TokenTransferWrapper({
                 Native token on{" "}
                 {chainId === SONIC_CHAIN_ID
                   ? "Sonic Chain"
-                  : "Sonic Blaze Testnet"}
+                  : chainId === SONIC_BLAZE_TESTNET_ID
+                    ? "Sonic Blaze Testnet"
+                    : chainId === BASE_CHAIN_ID
+                      ? "Base"
+                      : chainId === BASE_SEPOLIA_CHAIN_ID
+                        ? "Base Sepolia"
+                        : "Unknown Network"}
               </p>
             </div>
           </div>

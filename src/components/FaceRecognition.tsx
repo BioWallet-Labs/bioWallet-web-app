@@ -16,6 +16,8 @@ import { sonicChain } from "../chains";
 import Webcam from "react-webcam";
 import {
   SONIC_CHAIN_ID,
+  BASE_CHAIN_ID,
+  BASE_SEPOLIA_CHAIN_ID,
   bioWalletConfig,
   TOKEN_TRANSFER_ABI,
 } from "../constants";
@@ -133,6 +135,9 @@ export default function FaceRecognition({ savedFaces }: Props) {
   // Add effect to handle transaction confirmation
   useEffect(() => {
     if (isConfirmed && hash) {
+      // Use current chainId instead of hardcoded SONIC_CHAIN_ID
+      const currentChainId = chainId || SONIC_CHAIN_ID;
+
       setAgentSteps((prevSteps) => [
         ...prevSteps.slice(0, -1),
         {
@@ -141,13 +146,13 @@ export default function FaceRecognition({ savedFaces }: Props) {
           type: "transaction",
         },
         {
-          label: `<a href="${bioWalletConfig[SONIC_CHAIN_ID].blockExplorer}/tx/${hash}" target="_blank" rel="noopener noreferrer" class="hover:underline">View on ${bioWalletConfig[SONIC_CHAIN_ID].blockExplorer}</a>`,
+          label: `<a href="${bioWalletConfig[currentChainId].blockExplorer}/tx/${hash}" target="_blank" rel="noopener noreferrer" class="hover:underline">View on ${bioWalletConfig[currentChainId].blockExplorer}</a>`,
           isLoading: false,
           type: "hash",
         },
       ]);
     }
-  }, [isConfirmed, hash]);
+  }, [isConfirmed, hash, chainId]);
 
   // Reset transcript after a period of silence
   useEffect(() => {

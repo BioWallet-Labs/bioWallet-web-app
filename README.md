@@ -53,7 +53,7 @@ bioWallet enables **seamless payments** to anyone—**even without a phone or in
 🧠 **AI Agent** → `Opacity Verifiable Agent (EigenLayer AVS)`  
 🌐 **Frontend** → `React, Next.js`  
 🗄 **Storage** → `ETHStorage,  Walrus`
-🔗 **Blockchain** → `Sonic Chain, Sonic Blaze Testnet`
+🔗 **Blockchain** → `Sonic Chain, Sonic Blaze Testnet, Base, Base Sepolia`
 
 🚀 **Bringing the next billion on-chain!**
 
@@ -90,12 +90,14 @@ bioWallet enables **seamless payments** to anyone—**even without a phone or in
 ### 💰 **Token Transfers**
 
 - **Sonic Transfers** - Send Sonic with only a biometric scan
+- **Base Chain Support** - Support for Base and Base Sepolia networks
+- **USDC Integration** - Direct USDC transfers on Base networks
 - **Transaction Status Tracking** - Real-time updates on payment status
 - **Gas-free Transactions** - User-friendly payment experience
 
 ### 🔗 **Blockchain Integration**
 
-- **Multi-chain Support** - Compatible with Sonic Chain and Sonic Blaze Testnet
+- **Multi-chain Support** - Compatible with Sonic Chain, Sonic Blaze Testnet, Base, and Base Sepolia
 - **Web3 Wallet Connection** - Seamless connection with popular crypto wallets
 - **Transaction History** - View and manage past transactions
 

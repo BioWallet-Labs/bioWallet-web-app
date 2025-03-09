@@ -12,9 +12,19 @@ import { useEffect, useRef, useState } from "react";
 
 import React from "react";
 import RegisterWrapper from "./RegisterWrapper";
-import { SONIC_CHAIN_ID, SONIC_BLAZE_TESTNET_ID } from "../constants";
+import {
+  SONIC_CHAIN_ID,
+  SONIC_BLAZE_TESTNET_ID,
+  BASE_CHAIN_ID,
+  BASE_SEPOLIA_CHAIN_ID,
+} from "../constants";
 import Webcam from "react-webcam";
-import { sonicChain, sonicBlazeTestnet } from "../chains";
+import {
+  sonicChain,
+  sonicBlazeTestnet,
+  baseChain,
+  baseSepoliaChain,
+} from "../chains";
 import { bioWalletConfig } from "../constants";
 import { storeStringAndGetBlobId, readFromBlobId } from "../utility/walrus";
 import { useAccount } from "wagmi";
