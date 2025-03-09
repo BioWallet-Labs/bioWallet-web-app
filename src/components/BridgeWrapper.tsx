@@ -109,7 +109,9 @@ export default function BridgeWrapper({
       const quoteResponse = await getBridgeQuote(
         chainId,
         destinationChainId,
-        amountInSmallestUnit
+        amountInSmallestUnit,
+        (recipientAddress || address) as string,
+        {}
       );
 
       setQuote(quoteResponse);
@@ -144,14 +146,30 @@ export default function BridgeWrapper({
         TOKEN_DECIMALS_MAPPING[chainId]
       ).toString();
 
-      const executionResponse = await executeBridgeTransaction(
+      setExecutionError(
+        "To execute this transaction, please use a Web3 wallet provider."
+      );
+      setExecutionLoading(false);
+
+      // For now, just show the quote and log it
+      console.log("Quote data that would be used for transaction:", quote);
+      console.log("This would be executed with:", {
         chainId,
         destinationChainId,
         amountInSmallestUnit,
-        recipientAddress || address!
-      );
+        recipient: (recipientAddress || address) as string,
+      });
 
-      setExecutionResult(executionResponse);
+      // Update the execution result with quote info for display
+      setExecutionResult({
+        status: "quote_only",
+        message:
+          "Transaction prepared but not executed. Connect a Web3 wallet to execute.",
+        quote: quote,
+      });
+
+      // Return mock tx hash for UI purposes
+      return "0x0000000000000000000000000000000000000000000000000000000000000000";
     } catch (error) {
       console.error("Error executing bridge transaction:", error);
       setExecutionError(

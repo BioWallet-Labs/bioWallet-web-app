@@ -49,9 +49,25 @@ export default function TokenTransferWrapper({
   onTransactionSent?: (hash?: `0x${string}`) => void;
 }) {
   const chainId = useChainId();
-  const [usdAmount, setUsdAmount] = useState<string>(
-    initialUsdAmount || "1.00"
-  );
+
+  // Make sure initialUsdAmount is properly cleaned and set
+  let cleanInitialAmount = "1.00";
+  if (initialUsdAmount) {
+    if (
+      typeof initialUsdAmount === "string" &&
+      (initialUsdAmount.includes(" ") || /[a-zA-Z]/.test(initialUsdAmount))
+    ) {
+      // Extract numeric part
+      const match = initialUsdAmount.match(/^[\d.]+/);
+      cleanInitialAmount = match ? match[0] : "1.00";
+    } else {
+      cleanInitialAmount = initialUsdAmount;
+    }
+  }
+
+  // Initialize the state with the cleaned amount
+  const [usdAmount, setUsdAmount] = useState<string>(cleanInitialAmount);
+
   const [shouldAutoInitiate, setShouldAutoInitiate] =
     useState(!!initialUsdAmount);
   const [hasInitiatedTransaction, setHasInitiatedTransaction] = useState(false);
@@ -70,6 +86,33 @@ export default function TokenTransferWrapper({
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
     hash,
   });
+
+  // Auto-initiate the transaction if shouldAutoInitiate is true and we haven't started yet
+  useEffect(() => {
+    if (
+      shouldAutoInitiate &&
+      !hasInitiatedTransaction &&
+      !isLoadingTokenInfo &&
+      !isPending &&
+      !isSuccess
+    ) {
+      console.log(
+        "Auto-initiating Sonic token transfer with amount:",
+        cleanInitialAmount
+      );
+      // Small delay to ensure UI has updated
+      const timer = setTimeout(() => {
+        handleSendTransaction();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [
+    shouldAutoInitiate,
+    hasInitiatedTransaction,
+    isLoadingTokenInfo,
+    isPending,
+    isSuccess,
+  ]);
 
   useEffect(() => {
     if (isPending) {
@@ -127,20 +170,44 @@ export default function TokenTransferWrapper({
     fetchTokenDetails();
   }, [chainId]);
 
-  // Calculate token amount
+  // Calculate token amount for display
   const tokenAmount = !isNaN(parseFloat(usdAmount)) ? usdAmount : "0";
   const rawAmount = parseFloat(tokenAmount);
-  const parsedTokenAmount = parseUnits(tokenAmount, tokenInfo.decimals);
 
-  // Handle transaction
+  // Handle transaction - this function is ONLY for native token transfers
   const handleSendTransaction = async () => {
     try {
       setHasInitiatedTransaction(true);
 
-      // Send the transaction
+      // Get a clean amount string without any token symbols
+      let cleanAmount = tokenAmount;
+
+      // Check for token symbols in the amount
+      if (typeof cleanAmount === "string") {
+        if (cleanAmount.includes(" ") || /[a-zA-Z]/.test(cleanAmount)) {
+          // Extract just the numeric part
+          const numericMatch = cleanAmount.match(/^[\d.]+/);
+          if (numericMatch) {
+            cleanAmount = numericMatch[0];
+            console.log(
+              `Cleaned token amount from "${tokenAmount}" to "${cleanAmount}"`
+            );
+          }
+        }
+      }
+
+      // For native token transfers (like Sonic), we use the value field
+      // This is specifically for sending the chain's native currency
+      const parsedAmount = parseUnits(cleanAmount, tokenInfo.decimals);
+
+      console.log(
+        `Sending ${cleanAmount} ${tokenInfo.symbol} as native transfer`
+      );
+
+      // Send the transaction as a native token transfer
       await sendTransaction({
         to: recipientAddress,
-        value: parsedTokenAmount,
+        value: parsedAmount, // Native value transfer
       });
 
       // Call callback right after MetaMask confirms the transaction
