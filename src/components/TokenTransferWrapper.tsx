@@ -65,6 +65,14 @@ export default function TokenTransferWrapper({
     }
   }
 
+  // Log initialization for debugging
+  console.log(
+    "TokenTransferWrapper initializing with amount:",
+    initialUsdAmount,
+    "cleaned to:",
+    cleanInitialAmount
+  );
+
   // Initialize the state with the cleaned amount
   const [usdAmount, setUsdAmount] = useState<string>(cleanInitialAmount);
 
@@ -72,8 +80,8 @@ export default function TokenTransferWrapper({
     useState(!!initialUsdAmount);
   const [hasInitiatedTransaction, setHasInitiatedTransaction] = useState(false);
   const [tokenInfo, setTokenInfo] = useState({
-    symbol: "",
-    name: "",
+    symbol: "SONIC", // Default to SONIC to avoid USDC showing initially
+    name: "Sonic Token",
     decimals: 18,
   });
   const [transactionStatus, setTransactionStatus] = useState<string>("");
@@ -86,33 +94,6 @@ export default function TokenTransferWrapper({
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
     hash,
   });
-
-  // Auto-initiate the transaction if shouldAutoInitiate is true and we haven't started yet
-  useEffect(() => {
-    if (
-      shouldAutoInitiate &&
-      !hasInitiatedTransaction &&
-      !isLoadingTokenInfo &&
-      !isPending &&
-      !isSuccess
-    ) {
-      console.log(
-        "Auto-initiating Sonic token transfer with amount:",
-        cleanInitialAmount
-      );
-      // Small delay to ensure UI has updated
-      const timer = setTimeout(() => {
-        handleSendTransaction();
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [
-    shouldAutoInitiate,
-    hasInitiatedTransaction,
-    isLoadingTokenInfo,
-    isPending,
-    isSuccess,
-  ]);
 
   useEffect(() => {
     if (isPending) {
